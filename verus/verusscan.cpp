@@ -139,7 +139,7 @@ extern "C" void VerusHashHalf(void *result2, unsigned char *data, size_t len)
 
 
 
-extern "C" void Verus2hash(unsigned char *hash, unsigned char *curBuf, uint32_t nonce,
+extern "C" void Verus2hash(unsigned char *hash, unsigned char *curBuf, unsigned char *nonce,
 	__m128i * __restrict data_key, uint8_t *gpu_init, uint32_t * __restrict fixrand, uint32_t * __restrict fixrandex, __m128i * __restrict data_key_master,int version)
 {
 	uint64_t mask = VERUS_KEY_SIZE128; //552
@@ -154,7 +154,7 @@ extern "C" void Verus2hash(unsigned char *hash, unsigned char *curBuf, uint32_t 
 	//	FillExtra((__m128i *)curBuf);
 
 	uint64_t intermediate;
-	((uint32_t*)&curBuf[0])[8] = nonce;
+	memcpy(curBuf + 32, nonce, 15);  //copy the 15bytes nonce
 
 	//if(version == 3)
 	//	intermediate = verusclhash_port2_1(data_key,curBuf, 511, fixrand, fixrandex);
@@ -208,16 +208,27 @@ extern "C" int scanhash_verus(int thr_id, struct work *work, uint32_t max_nonce,
 	uint32_t fixrand[32];
 	uint32_t fixrandex[32];
 
-	uint8_t version = work->hash_ver;
-	unsigned char block_41970[4] = { 0xfd, 0x40, 0x05};
-	block_41970[3] = version;
-	uint8_t _ALIGN(64) full_data[140 + 3 + 1344] = { 0 };
+	unsigned char block_41970[3] = { 0xfd, 0x40, 0x05};
+	uint8_t  full_data[140 + 3 + 1344] = { 0 };
 	uint8_t* sol_data = &full_data[140];
 
-	memcpy(endiandata, pdata, 140);
-	memcpy(sol_data, block_41970, 4);
-	memcpy(full_data, endiandata, 140);
-	//	memcpy(full_data, data, 1487);
+	memcpy(full_data, pdata, 140);
+	memcpy(sol_data, block_41970, 3);
+	memcpy(sol_data + 3, work->solution, 1344);
+	uint8_t version = work->solution[0];
+	uint8_t nonceSpace[15] = {0};  //pool nonce (32bit) + round(32bit) + thrd id (byte) + padding(2bytes) + counting nonce(32bit)
+	
+    if (version >= 7 && work->solution[5] > 0) {
+
+        // clear non-canonical data from header/solution before hashing; required for merged mining 
+		memset(full_data + 4, 0, 96);                        // hashPrevBlock, hashMerkleRoot, hashFinalSaplingRoot
+        memset(full_data + 4 + 32 + 32 + 32 + 4, 0, 4);      // nBits
+        memset(full_data + 4 + 32 + 32 + 32 + 4 + 4, 0, 32); // nNonce
+        memset(sol_data + 3 + 8, 0, 64);                     // hashPrevMMRRoot, hashBlockMMRRoot
+		memcpy(nonceSpace, &pdata[EQNONCE_OFFSET - 3], 4 );			// transfer the nonce values that would be in the header to
+		memcpy(nonceSpace + 4, &pdata[EQNONCE_OFFSET + 1], 4 );		// the 15 bytes available
+		memcpy(nonceSpace + 8, &pdata[EQNONCE_OFFSET + 2], 1 );	
+	}
 
 	uint32_t _ALIGN(64) vhash[8] = { 0 };
 
@@ -232,19 +243,23 @@ extern "C" int scanhash_verus(int thr_id, struct work *work, uint32_t max_nonce,
 	do {
 
 		*hashes_done = nonce_buf + throughput;
-		Verus2hash((unsigned char *)vhash, (unsigned char *)blockhash_half, nonce_buf, data_key, &gpuinit, fixrand, fixrandex, data_key_master, version);
+
+		((uint32_t *)(&nonceSpace[11]))[0] = nonce_buf;
+
+		//Verus2hash((unsigned char *)vhash, (unsigned char *)blockhash_half, nonceSpace, data_key, 
+		//		&gpuinit, fixrand, fixrandex , data_key_prand, data_key_prandex, version);
+        Verus2hash((unsigned char *)vhash, (unsigned char *)blockhash_half, nonceSpace, data_key, &gpuinit, fixrand, fixrandex, data_key_master, version);
 
 		if (vhash[7] <= Htarg )
 		{
-			*((uint32_t *)full_data + 368) = nonce_buf;
 			work->valid_nonces++;
-
-			memcpy(work->data, endiandata, 140);
+			memcpy(work->data, full_data, 140);
 			int nonce = work->valid_nonces - 1;
 			memcpy(work->extra, sol_data, 1347);
+			memcpy(work->extra + 1332, nonceSpace, 15);  //copy in the valid nonce 15 bytes to the solution part
 			bn_store_hash_target_ratio(vhash, work->target, work, nonce);
 
-			work->nonces[work->valid_nonces - 1] = endiandata[NONCE_OFT];
+			work->nonces[work->valid_nonces - 1] = ((uint32_t*)full_data)[NONCE_OFT];
 			//pdata[NONCE_OFT] = endiandata[NONCE_OFT] + 1;
 			goto out;
 		}

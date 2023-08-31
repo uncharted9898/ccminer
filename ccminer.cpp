@@ -547,7 +547,11 @@ static void affine_to_cpu_mask(int id, unsigned long mask) {
 		sched_setaffinity(0, sizeof(&set), &set);
 	} else {
 		// thread only
+#if !(defined(__ANDROID__) || (__ANDROID_API__ > 23))
 		pthread_setaffinity_np(thr_info[id].pth, sizeof(&set), &set);
+#else
+		sched_setaffinity(0, sizeof(&set), &set);
+#endif
 	}
 }
 #elif defined(__FreeBSD__) /* FreeBSD specific policy and affinity management */
@@ -1617,7 +1621,7 @@ static bool stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 	} else if (opt_algo == ALGO_EQUIHASH) {
 		memcpy(&work->data[9], sctx->job.coinbase, 32+32); // merkle [9..16] + reserved
 		work->data[25] = le32dec(sctx->job.ntime);
-		work->hash_ver = sctx->job.hash_ver;
+		memcpy(&work->solution, sctx->job.solution,1344);
 		work->data[26] = le32dec(sctx->job.nbits);
 		memcpy(&work->data[27], sctx->xnonce1, sctx->xnonce1_size & 0x1F); // pool extranonce
 		work->data[35] = 0x80;
@@ -1983,7 +1987,7 @@ static void *miner_thread(void *userdata)
 			wcmplen -= 4;
 		}
 
-		if (opt_algo == ALGO_CRYPTONIGHT || opt_algo == ALGO_CRYPTOLIGHT) {
+		if (opt_algo == ALGO_CRYPTONIGHT || opt_algo == ALGO_CRYPTOLIGHT || opt_algo == ALGO_EQUIHASH) {
 			uint32_t oldpos = nonceptr[0];
 			bool nicehash = strstr(pools[cur_pooln].url, "nicehash") != NULL;
 			if (memcmp(&work.data[wcmpoft], &g_work.data[wcmpoft], wcmplen)) {
@@ -1991,6 +1995,8 @@ static void *miner_thread(void *userdata)
 				if (!nicehash) nonceptr[0] = (rand()*4) << 24;
 				nonceptr[0] &=  0xFF000000u; // nicehash prefix hack
 				nonceptr[0] |= (0x00FFFFFFu / opt_n_threads) * thr_id;
+				// force xnsub when mining using nicehash stratum
+				opt_extranonce = true;
 			}
 			// also check the end, nonce in the middle
 			else if (memcmp(&work.data[44/4], &g_work.data[0], 76-44)) {
@@ -2037,7 +2043,7 @@ static void *miner_thread(void *userdata)
 			nonceptr[2] |= thr_id;
 
 		} else if (opt_algo == ALGO_EQUIHASH) {
-			nonceptr[1]++;
+			nonceptr[1] = (rand()*4);
 			nonceptr[2] |= thr_id;  //try  was nonceptr[1] |= thr_id << 24
 			//applog_hex(&work.data[27], 32);
 		} else if (opt_algo == ALGO_WILDKECCAK) {
