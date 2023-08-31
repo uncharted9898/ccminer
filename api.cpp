@@ -1080,6 +1080,7 @@ static void *mcast_thread(void *userdata)
 
 #if !(defined(__ANDROID__) || (__ANDROID_API__ > 23))
 	pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+#endif
 
 	mcast();
 
